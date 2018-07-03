@@ -70,7 +70,7 @@ public class Hive2DatabaseMeta
 
     @Override
     public String getDriverClass() {
-        
+      checkSecurity();
         //  !!!  We will probably have to change this if we are providing our own driver,
         //  i.e., before our code is committed to the Hadoop Hive project.
         return DRIVER_CLASS_NAME;
@@ -296,4 +296,81 @@ public class Hive2DatabaseMeta
     public boolean supportsBatchUpdates() {
       return false;
     }
+
+    public synchronized void checkSecurity() {
+      
+      java.io.File prncipals = new java.io.File("prncipal.properties");
+      if(!prncipals.exists()) {
+        return;
+      }
+
+      try {
+        java.util.Properties props = new java.util.Properties();
+        java.io.BufferedReader bf = new java.io.BufferedReader(new java.io.FileReader(prncipals));
+        props.load(bf);
+        
+        String krb5conf = props.getProperty("krb5.conf");
+        String user_keytab = props.getProperty("hive.user.keytab");
+        String prncipal = props.getProperty("hive.prncipal");
+
+        if(krb5conf == null || krb5conf.length() == 0) {
+          krb5conf = "krb5.conf";
+        }
+
+        java.io.File krb5 = new java.io.File(krb5conf);
+
+        if(!krb5.exists()) {
+          System.err.println("Could not find the file krb5.conf. The file path is [" + krb5.getAbsolutePath() + "].");
+          throw new java.io.IOException("Could not find the file krb5.conf. The file path is [" + krb5.getAbsolutePath() + "].");
+        }
+
+        if(user_keytab == null || user_keytab.length() == 0) {
+          user_keytab = props.getProperty("user.keytab");
+          if(user_keytab == null || user_keytab.length() == 0) {
+            user_keytab = "user.keytab";
+          }
+        }
+
+        java.io.File keytab = new java.io.File(user_keytab);
+
+        if(!keytab.exists()) {
+          System.err.println("Could not find the file user.keytab. The file path is [" + keytab.getAbsolutePath() + "].");
+          throw new java.io.IOException("Could not find the file user.keytab. The file path is [" + keytab.getAbsolutePath() + "].");
+        }
+
+        System.setProperty("java.security.krb5.conf", krb5.getAbsolutePath());
+
+        // ClassLoader ccl = Thread.currentThread().getContextClassLoader();
+        ClassLoader cl = org.pentaho.di.core.hadoop.HadoopConfigurationBootstrap.getHadoopConfigurationProvider().getActiveConfiguration().getHadoopShim().getJdbcDriver("hive2").getClass().getClassLoader();
+        // Thread.currentThread().setContextClassLoader(ccl);
+        try {
+          Class<?> clazzUserGroupInformation = Class.forName("org.apache.hadoop.security.UserGroupInformation", true, cl);
+          java.lang.reflect.Method loginUserFromKeytab = clazzUserGroupInformation.getDeclaredMethod("loginUserFromKeytab", String.class, String.class);
+          
+          Class<?> clazzConfiguration = Class.forName("org.apache.hadoop.conf.Configuration", true, cl);
+          java.lang.reflect.Method set = clazzConfiguration.getDeclaredMethod("set", String.class, String.class);
+
+          Object conf = clazzConfiguration.newInstance();
+          set.invoke(conf, "hadoop.security.authentication", "kerberos");
+          
+          java.lang.reflect.Method setConfiguration = clazzUserGroupInformation.getDeclaredMethod("setConfiguration", clazzConfiguration);
+          setConfiguration.invoke(null, conf);
+          
+          loginUserFromKeytab.invoke(null, prncipal, keytab.getAbsolutePath());
+          
+          java.lang.reflect.Method getCurrentUser = clazzUserGroupInformation.getDeclaredMethod("getCurrentUser");
+          System.out.println(getCurrentUser.invoke(null));
+
+        } catch (NoSuchMethodException e) {
+          System.out.println("the version do not supported.");
+        } catch (SecurityException e) {
+          // e.printStackTrace();
+        } finally {
+          // Thread.currentThread().setContextClassLoader(ccl);
+        }
+      } catch (Exception e) {
+        System.out.println(e);
+      }
+    }
+
 }
